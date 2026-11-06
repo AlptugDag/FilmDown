@@ -7,38 +7,36 @@ Powered by Alptuğ Dağ
 import os
 import sys
 import shutil
-import subprocess
 import threading
+import subprocess
+import warnings
+import json
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
+# Silence deprecation and runtime warnings
+warnings.filterwarnings('ignore')
+os.environ['PYTHONWARNINGS'] = 'ignore'
+
 APP_NAME = "FilmDown"
-APP_VERSION = "1.0.0"
+APP_VERSION = "2.0.0"
 AUTHOR = "Alptuğ Dağ"
 
-def find_binary(name):
-    paths = [
-        shutil.which(name),
-        f"/opt/homebrew/bin/{name}",
-        f"/usr/local/bin/{name}",
-        f"/Library/Frameworks/Python.framework/Versions/3.10/bin/{name}",
-        os.path.expanduser(f"~/Library/Python/3.10/bin/{name}"),
-        os.path.expanduser(f"~/Library/Python/3.9/bin/{name}"),
-    ]
-    for p in paths:
-        if p and os.path.exists(p) and os.access(p, os.X_OK):
-            return p
-    return name
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+ENGINE_SCRIPT = os.path.join(CURRENT_DIR, "src", "engine.py")
+if not os.path.exists(ENGINE_SCRIPT):
+    ENGINE_SCRIPT = os.path.join(CURRENT_DIR, "engine.py")
 
-YT_DLP_BIN = find_binary("yt-dlp")
-FFMPEG_BIN = find_binary("ffmpeg")
+class ModernProgressDialog(ttk.Frame):
+    def __init__(self, parent, *args, **kwargs):
+        super().__init__(parent, *args, **kwargs)
 
 class FilmDownApp:
     def __init__(self, root):
         self.root = root
         self.root.title(f"{APP_NAME} — Powered by {AUTHOR}")
-        self.root.geometry("700x590")
-        self.root.minsize(600, 500)
+        self.root.geometry("660x520")
+        self.root.minsize(580, 460)
 
         # Style & Theme
         style = ttk.Style()
@@ -47,193 +45,240 @@ class FilmDownApp:
         except Exception:
             style.theme_use('clam')
 
-        # Header Frame (Branding)
-        header_frame = ttk.Frame(root)
-        header_frame.pack(fill="x", padx=16, pady=(12, 6))
+        self.proc = None
+        self.is_downloading = False
 
-        title_label = ttk.Label(header_frame, text=f"🎬 {APP_NAME}", font=("Helvetica", 18, "bold"))
-        title_label.pack(side="left")
+        self._build_ui()
 
-        powered_label = ttk.Label(
-            header_frame, 
-            text=f"⚡ Powered by {AUTHOR}", 
-            font=("Helvetica", 11, "bold"), 
-            foreground="#555555"
-        )
-        powered_label.pack(side="right", pady=4)
+    def _build_ui(self):
+        main_frame = ttk.Frame(self.root, padding=16)
+        main_frame.pack(fill=tk.BOTH, expand=True)
 
-        # System Status Banner
-        ytdlp_status = "✅ yt-dlp hazır" if shutil.which(YT_DLP_BIN) or os.path.exists(YT_DLP_BIN) else "⚠️ yt-dlp bulunamadı"
-        ffmpeg_status = "✅ ffmpeg hazır" if shutil.which(FFMPEG_BIN) or os.path.exists(FFMPEG_BIN) else "⚠️ ffmpeg bulunamadı"
+        # Header
+        header = ttk.Frame(main_frame)
+        header.pack(fill=tk.X, pady=(0, 12))
 
-        status_bar = ttk.Frame(root)
-        status_bar.pack(fill="x", padx=16, pady=(0, 6))
-        ttk.Label(
-            status_bar, 
-            text=f"Sistem: {ytdlp_status}  •  {ffmpeg_status}  •  v{APP_VERSION}", 
-            font=("Helvetica", 10), 
-            foreground="#666666"
-        ).pack(side="left")
+        title_lbl = ttk.Label(header, text="FilmDown", font=("Helvetica", 18, "bold"))
+        title_lbl.pack(anchor="w")
+
+        sub_lbl = ttk.Label(header, text=f"Yüksek Kaliteli Video ve Medya İndirici • Sürüm {APP_VERSION}", foreground="#666666")
+        sub_lbl.pack(anchor="w")
 
         # URL Input Section
-        url_frame = ttk.LabelFrame(root, text=" Video / M3U8 Adresleri (Her satıra bir link) ")
-        url_frame.pack(fill="both", expand=True, padx=16, pady=4)
+        url_frame = ttk.LabelFrame(main_frame, text=" Bağlantı Listesi (Her satıra bir adres) ", padding=10)
+        url_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
 
-        self.url_text = tk.Text(url_frame, height=7, wrap="none", font=("Menlo", 11))
-        self.url_text.pack(fill="both", expand=True, padx=8, pady=8)
+        self.url_text = tk.Text(url_frame, height=6, font=("Menlo", 11), wrap="none", relief="solid", borderwidth=1)
+        self.url_text.pack(fill=tk.BOTH, expand=True)
 
-        # Download Directory Section
-        dir_frame = ttk.LabelFrame(root, text=" İndirilecek Klasör ")
-        dir_frame.pack(fill="x", padx=16, pady=4)
+        # Settings Section
+        opts_frame = ttk.LabelFrame(main_frame, text=" İndirme Ayarları ve Hedef Klasör ", padding=10)
+        opts_frame.pack(fill=tk.X, pady=(0, 10))
 
-        default_dir = os.path.expanduser("~/Desktop/ALPTUĞ İÇERİK")
-        if not os.path.exists(default_dir):
-            default_dir = os.path.expanduser("~/Movies")
+        # Target Dir Row
+        dir_row = ttk.Frame(opts_frame)
+        dir_row.pack(fill=tk.X, pady=(0, 8))
 
-        self.dir_var = tk.StringVar(value=default_dir)
-        self.dir_entry = ttk.Entry(dir_frame, textvariable=self.dir_var, font=("Helvetica", 11))
-        self.dir_entry.pack(side="left", fill="x", expand=True, padx=(8, 4), pady=8)
+        ttk.Label(dir_row, text="Hedef Klasör:").pack(side=tk.LEFT)
 
-        self.browse_btn = ttk.Button(dir_frame, text="Gözat...", command=self.browse_dir)
-        self.browse_btn.pack(side="right", padx=(4, 8), pady=8)
+        default_dest = os.path.expanduser("~/Desktop/ALPTUĞ İÇERİK")
+        if not os.path.exists(default_dest):
+            default_dest = os.path.expanduser("~/Downloads")
 
-        # Subfolder (Optional)
-        sub_frame = ttk.Frame(root)
-        sub_frame.pack(fill="x", padx=16, pady=4)
-        ttk.Label(sub_frame, text="Alt Klasör Adı (opsiyonel):").pack(side="left")
-        self.subdir_var = tk.StringVar(value="")
-        self.subdir_entry = ttk.Entry(sub_frame, textvariable=self.subdir_var)
-        self.subdir_entry.pack(side="left", fill="x", expand=True, padx=(8, 0))
+        self.dest_var = tk.StringVar(value=default_dest)
+        self.dest_entry = ttk.Entry(dir_row, textvariable=self.dest_var)
+        self.dest_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=8)
 
-        # Controls & Action
-        ctrl_frame = ttk.Frame(root)
-        ctrl_frame.pack(fill="x", padx=16, pady=8)
+        browse_btn = ttk.Button(dir_row, text="Gözat...", command=self._browse_dir)
+        browse_btn.pack(side=tk.LEFT)
 
-        self.download_btn = ttk.Button(ctrl_frame, text="⬇️ En Yüksek Kalitede İndir", command=self.start_download)
-        self.download_btn.pack(side="left", padx=(0, 10))
+        # Options Checkboxes
+        toggles_row = ttk.Frame(opts_frame)
+        toggles_row.pack(fill=tk.X)
 
-        self.clear_btn = ttk.Button(ctrl_frame, text="Temizle", command=self.clear_all)
-        self.clear_btn.pack(side="left", padx=(0, 10))
+        self.sep_folders_var = tk.BooleanVar(value=True)
+        sep_check = ttk.Checkbutton(toggles_row, text="Her video için ayrı klasör oluştur", variable=self.sep_folders_var)
+        sep_check.pack(side=tk.LEFT, padx=(0, 16))
 
-        self.status_label = ttk.Label(ctrl_frame, text="Hazır", foreground="gray", font=("Helvetica", 10, "bold"))
-        self.status_label.pack(side="left", fill="x", expand=True)
+        self.no_collision_var = tk.BooleanVar(value=True)
+        col_check = ttk.Checkbutton(toggles_row, text="Aynı isimli videoların üzerine yazma (Otomatik numaralandır)", variable=self.no_collision_var)
+        col_check.pack(side=tk.LEFT)
 
-        # Log & Progress Console
-        log_frame = ttk.LabelFrame(root, text=" Canlı İlerleme & Çıktı Günlüğü ")
-        log_frame.pack(fill="both", expand=True, padx=16, pady=(4, 6))
+        # Progress Section (Loading Bar)
+        prog_frame = ttk.LabelFrame(main_frame, text=" Durum ", padding=10)
+        prog_frame.pack(fill=tk.X, pady=(0, 12))
 
-        self.log_text = tk.Text(log_frame, height=8, state="disabled", font=("Menlo", 10), bg="#181818", fg="#d4d4d4")
-        self.log_text.pack(fill="both", expand=True, padx=8, pady=8)
+        self.progress_bar = ttk.Progressbar(prog_frame, mode="determinate", maximum=100)
+        self.progress_bar.pack(fill=tk.X, pady=(0, 6))
 
-        # Footer
-        footer_frame = ttk.Frame(root)
-        footer_frame.pack(fill="x", padx=16, pady=(0, 8))
-        ttk.Label(
-            footer_frame, 
-            text=f"FilmDown • Developed & Powered by {AUTHOR} • All Rights Reserved", 
-            font=("Helvetica", 9), 
-            foreground="#888888"
-        ).pack(side="right")
+        self.status_var = tk.StringVar(value="İndirmeye hazır.")
+        self.status_lbl = ttk.Label(prog_frame, textvariable=self.status_var, foreground="#333333")
+        self.status_lbl.pack(anchor="w")
 
-    def browse_dir(self):
-        chosen = filedialog.askdirectory(initialdir=self.dir_var.get() or os.path.expanduser("~"))
-        if chosen:
-            self.dir_var.set(chosen)
+        # Bottom Action Bar
+        act_frame = ttk.Frame(main_frame)
+        act_frame.pack(fill=tk.X)
 
-    def clear_all(self):
-        self.url_text.delete("1.0", tk.END)
-        self.subdir_var.set("")
-        self.log_text.config(state="normal")
-        self.log_text.delete("1.0", tk.END)
-        self.log_text.config(state="disabled")
-        self.status_label.config(text="Hazır", foreground="gray")
+        open_btn = ttk.Button(act_frame, text="Klasörü Aç", command=self._open_dir)
+        open_btn.pack(side=tk.LEFT)
 
-    def log(self, message):
-        self.log_text.config(state="normal")
-        self.log_text.insert(tk.END, message + "\n")
-        self.log_text.see(tk.END)
-        self.log_text.config(state="disabled")
+        clear_btn = ttk.Button(act_frame, text="Temizle", command=self._clear_input)
+        clear_btn.pack(side=tk.LEFT, padx=8)
 
-    def start_download(self):
-        raw_urls = self.url_text.get("1.0", tk.END).splitlines()
-        urls = [u.strip() for u in raw_urls if u.strip()]
+        self.action_btn = ttk.Button(act_frame, text="İndirmeyi Başlat", command=self._toggle_download)
+        self.action_btn.pack(side=tk.RIGHT)
+
+    def _browse_dir(self):
+        folder = filedialog.askdirectory(initialdir=self.dest_var.get())
+        if folder:
+            self.dest_var.set(folder)
+
+    def _open_dir(self):
+        target = self.dest_var.get()
+        if os.path.exists(target):
+            if sys.platform == "darwin":
+                subprocess.run(["open", target])
+            elif sys.platform == "win32":
+                os.startfile(target)
+            else:
+                subprocess.run(["xdg-open", target])
+
+    def _clear_input(self):
+        if not self.is_downloading:
+            self.url_text.delete("1.0", tk.END)
+            self.progress_bar["value"] = 0
+            self.status_var.set("İndirmeye hazır.")
+
+    def _toggle_download(self):
+        if self.is_downloading:
+            self._stop_download()
+        else:
+            self._start_download()
+
+    def _stop_download(self):
+        if self.proc:
+            try:
+                self.proc.terminate()
+            except Exception:
+                pass
+        self.is_downloading = False
+        self.action_btn.config(text="İndirmeyi Başlat")
+        self.status_var.set("İndirme işlemi kullanıcı tarafından durduruldu.")
+
+    def _start_download(self):
+        raw = self.url_text.get("1.0", tk.END).strip()
+        urls = [line.strip() for line in raw.splitlines() if line.strip() and not line.strip().startswith("#")]
+
         if not urls:
-            messagebox.showwarning("Eksik Bilgi", "Lütfen en az bir video URL'si girin.")
+            messagebox.showwarning("Eksik Bilgi", "Lütfen en az bir video bağlantısı girin.")
             return
 
-        save_dir = self.dir_var.get().strip()
-        if not save_dir:
-            messagebox.showwarning("Eksik Bilgi", "Lütfen bir indirme klasörü seçin.")
+        dest = self.dest_var.get().strip()
+        if not dest:
+            messagebox.showwarning("Eksik Bilgi", "Lütfen geçerli bir hedef klasör seçin.")
             return
 
-        sub = self.subdir_var.get().strip()
-        if sub:
-            save_dir = os.path.join(save_dir, sub)
+        os.makedirs(dest, exist_ok=True)
 
+        self.is_downloading = True
+        self.action_btn.config(text="Durdur")
+        self.progress_bar["value"] = 0
+        self.status_var.set("İndirme işlemi hazırlanıyor...")
+
+        threading.Thread(target=self._run_worker, args=(urls, dest), daemon=True).start()
+
+    def _run_worker(self, urls, dest):
+        temp_file = os.path.expanduser(f"~/.filmdown_urls_{os.getpid()}.txt")
         try:
-            os.makedirs(save_dir, exist_ok=True)
-        except Exception as e:
-            messagebox.showerror("Hata", f"Klasör oluşturulamadı: {e}")
-            return
-
-        self.download_btn.config(state="disabled")
-        self.status_label.config(text="İndirme işlemi başlatılıyor...", foreground="#0066cc")
-
-        threading.Thread(target=self._download_worker, args=(urls, save_dir), daemon=True).start()
-
-    def _download_worker(self, urls, save_dir):
-        total = len(urls)
-        success_count = 0
-
-        env = os.environ.copy()
-        extra_paths = ["/opt/homebrew/bin", "/usr/local/bin", "/Library/Frameworks/Python.framework/Versions/3.10/bin"]
-        env["PATH"] = ":".join(extra_paths) + ":" + env.get("PATH", "")
-
-        for i, url in enumerate(urls, 1):
-            self.log(f"[{i}/{total}] Başlatılıyor: {url}")
-            output_template = os.path.join(save_dir, "%(title)s.%(ext)s")
+            with open(temp_file, "w", encoding="utf-8") as f:
+                f.write("\n".join(urls))
 
             cmd = [
-                YT_DLP_BIN,
-                "--no-check-certificates",
-                "-f", "bestvideo+bestaudio/best",
-                "--merge-output-format", "mp4/mkv",
-                "-o", output_template,
-                url
+                sys.executable,
+                "-W", "ignore",
+                ENGINE_SCRIPT,
+                "--urls-file", temp_file,
+                "--dest", dest
             ]
+            if self.sep_folders_var.get():
+                cmd.append("--separate-folders")
+            if self.no_collision_var.get():
+                cmd.append("--prevent-collision")
 
-            try:
-                proc = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    bufsize=1,
-                    env=env
-                )
-                for line in proc.stdout:
-                    clean = line.strip()
-                    if clean:
-                        if "[download]" in clean and "%" in clean:
-                            self.status_label.config(text=f"[{i}/{total}] {clean}")
-                        self.log(clean)
-                proc.wait()
+            env = os.environ.copy()
+            env["PYTHONWARNINGS"] = "ignore"
+            extra_paths = ["/opt/homebrew/bin", "/usr/local/bin", os.path.expanduser("~/.local/bin")]
+            env["PATH"] = ":".join(extra_paths) + ":" + env.get("PATH", "")
 
-                if proc.returncode == 0:
-                    self.log(f"✅ İndirme tamamlandı: {url}\n")
-                    success_count += 1
-                else:
-                    self.log(f"❌ İndirme başarısız (Kod {proc.returncode}): {url}\n")
-            except Exception as e:
-                self.log(f"❌ Çalıştırma hatası: {str(e)}\n")
+            self.proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                bufsize=1,
+                env=env
+            )
 
-        self.download_btn.config(state="normal")
-        if success_count == total:
-            self.status_label.config(text=f"Tüm indirmeler tamamlandı ({success_count}/{total})!", foreground="green")
-            messagebox.showinfo("Başarılı", f"{total} adet video başarıyla kaydedildi:\n{save_dir}\n\nFilmDown - Powered by {AUTHOR}")
-        else:
-            self.status_label.config(text=f"{success_count}/{total} video tamamlandı.", foreground="orange")
-            messagebox.showwarning("Bitti", f"{total} videodan {success_count} tanesi indirildi.")
+            for line in self.proc.stdout:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                    self._handle_event(data)
+                except Exception:
+                    pass
+
+            self.proc.wait()
+        except Exception as e:
+            self.root.after(0, lambda: self.status_var.set(f"Hata: {e}"))
+        finally:
+            if os.path.exists(temp_file):
+                try:
+                    os.remove(temp_file)
+                except Exception:
+                    pass
+            self.root.after(0, self._on_finish)
+
+    def _handle_event(self, data):
+        evt_type = data.get("type")
+        if evt_type == "item_progress":
+            idx = data.get("index", 1)
+            total = data.get("total", 1)
+            pct = data.get("percent", 0.0)
+            spd = data.get("speed", "")
+            eta = data.get("eta", "")
+
+            overall = (float(idx - 1) + (pct / 100.0)) / float(total) * 100.0
+            msg = f"Video {idx} / {total} — %{pct:.1f}"
+            if spd: msg += f" • {spd}"
+            if eta: msg += f" • Kalan: {eta}"
+
+            self.root.after(0, lambda: self._update_progress(overall, msg))
+        elif evt_type == "item_processing":
+            idx = data.get("index", 1)
+            total = data.get("total", 1)
+            msg = data.get("message", "İşleniyor...")
+            self.root.after(0, lambda: self.status_var.set(f"Video {idx} / {total} — {msg}"))
+        elif evt_type == "item_complete":
+            idx = data.get("index", 1)
+            total = data.get("total", 1)
+            title = data.get("title", "Video")
+            overall = (float(idx) / float(total)) * 100.0
+            self.root.after(0, lambda: self._update_progress(overall, f"Video {idx} / {total} tamamlandı: {title}"))
+        elif evt_type == "all_done":
+            tot = data.get("total", 0)
+            succ = data.get("success_count", 0)
+            msg = f"Tüm indirmeler tamamlandı ({succ} / {tot} video kaydedildi)." if succ == tot else f"İşlem tamamlandı ({succ} / {tot} video kaydedildi)."
+            self.root.after(0, lambda: self._update_progress(100.0, msg))
+
+    def _update_progress(self, val, msg):
+        self.progress_bar["value"] = val
+        self.status_var.set(msg)
+
+    def _on_finish(self):
+        self.is_downloading = False
+        self.action_btn.config(text="İndirmeyi Başlat")
 
 def main():
     root = tk.Tk()
