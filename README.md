@@ -23,14 +23,15 @@ Geliştirici: **Alptuğ Dağ**
 
 ---
 
-## Öne Çıkan Yenilikler (Sürüm 2.0)
+## Öne Çıkan Özellikler (Sürüm 2.1)
 
-- **Liquid Glass Arayüz:** macOS görsel efekt motoru (`NSVisualEffectView`) ile çalışan, şeffaf buzlu cam estetiğine sahip modern ve sade kullanıcı deneyimi.
-- **Toplu İndirme ve Ayrı Klasörleme:** Birden fazla bağlantı girildiğinde her videoyu kendi adını taşıyan bağımsız bir klasöre organize etme seçeneği.
-- **Çakışma Koruması (Anti-Collision):** Aynı ada sahip videoların asla birbirinin üzerine yazılmaması; mevcut dosya veya klasör tespit edildiğinde otomatik olarak artımlı adlandırma (`(1)`, `(2)`).
-- **Yalın İlerleme Çubuğu:** Canlı konsol ve terminal çıktı kutusu yerine yumuşak geçişli, yüzdelik oran, anlık hız ve kalan süre gösteren modern yükleme çubuğu.
-- **Sıfır Uyarı ve Yerel Hız:** Python sürüm/konsol uyarıları tamamen filtrelenmiş olup, Mach-O 64-bit yerel ikili dosya üzerinden anında açılır.
-- **Kayıpsız Birleştirme:** Video ve ses akışlarını pürüzsüz MP4 formatında kayıpsız birleştirir.
+- **Sabit ve Responsive Pencere:** Pencere boyutu ideal ölçüde sabitlenmiştir (660x610); ekran boyutlandırma hataları engellenmiş, kartlar, kuyruk listesi ve butonlar pencere içine duyarlı (responsive) olarak yerleşecek şekilde tasarlanmıştır.
+- **Her Video İçin Ayrı Hedef Klasör:** İndirme kuyruğundaki her videonun nereye kaydedileceğini bağımsız olarak belirleyebilirsiniz. Her videonun yanında bulunan "Klasör Seç" butonu ile her bağlantıya özel bir klasör atanabilir.
+- **Kalıcı Çakışma Koruması (Anti-Collision):** Çakışma koruması varsayılan ve kalıcı olarak devrededir (seçenek değildir). Aynı başlığa sahip dosya veya klasörler asla birbirinin üzerine yazılmaz; sistem otomatik olarak `(1)`, `(2)` şeklinde artımlı adlandırarak tüm verileri korur.
+- **Liquid Glass Arayüz:** macOS yerel görsel efekt motoru (`NSVisualEffectView`, acrylic frosted glass) ile şeffaf buzlu cam estetiği.
+- **Yalın Yükleme Çubuğu:** Ham terminal/konsol çıktısı yerine yumuşak geçişli yüzdelik oran, indirme hızı ve kalan süreyi gösteren modern loading bar.
+- **Sıfır Uyarı ve Anında Başlatma:** Mach-O 64-bit yerel ikili dosya olarak sıfır gecikmeyle açılır; Python sürüm/konsol uyarıları filtrelenmiştir.
+- **Emojisiz Tasarım:** Tamamen profesyonel, temiz ve modern bir görsel dil.
 
 ---
 
@@ -53,11 +54,10 @@ Geliştirici: **Alptuğ Dağ**
 ## Derleme ve Kurulum
 
 ### Yerel macOS Uygulamasını Derleme (`FilmDown.app`)
-Projeyi klonladıktan sonra tek komutla yerel Swift Mach-O uygulamasını derleyebilirsiniz:
+Projeyi klonladıktan sonra yerel Swift Mach-O uygulamasını derleyebilirsiniz:
 ```bash
 make build
 ```
-Oluşturulan `FilmDown.app` paketini `/Applications` veya istediğiniz bir klasöre taşıyabilirsiniz.
 
 Masaüstündeki çalışma klasörüne doğrudan kurmak için:
 ```bash

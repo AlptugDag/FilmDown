@@ -29,10 +29,14 @@ struct WindowConfigurator: NSViewRepresentable {
                 window.title = "FilmDown"
                 window.titlebarAppearsTransparent = true
                 window.titleVisibility = .hidden
-                window.styleMask.insert([.titled, .closable, .miniaturizable, .fullSizeContentView])
+                // Non-resizable fixed window size
+                window.styleMask = [.titled, .closable, .miniaturizable, .fullSizeContentView]
                 window.isMovableByWindowBackground = true
                 window.backgroundColor = .clear
-                window.minSize = NSSize(width: 580, height: 500)
+                let fixedSize = NSSize(width: 660, height: 610)
+                window.setContentSize(fixedSize)
+                window.minSize = fixedSize
+                window.maxSize = fixedSize
             }
         }
         return view
@@ -40,59 +44,118 @@ struct WindowConfigurator: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {}
 }
 
+struct DownloadItem: Identifiable, Equatable {
+    let id = UUID()
+    var url: String
+    var destPath: String
+    var statusText: String = "Bekliyor"
+    var percent: Double = 0.0
+    var isDownloading: Bool = false
+    var isDone: Bool = false
+    var isError: Bool = false
+}
+
 class DownloaderModel: ObservableObject {
-    @Published var urlText: String = ""
-    @Published var destPath: String = ""
+    @Published var queue: [DownloadItem] = []
+    @Published var inputUrl: String = ""
+    @Published var defaultDestPath: String = ""
     @Published var separateFolders: Bool = true
-    @Published var preventCollision: Bool = true
     @Published var isDownloading: Bool = false
     @Published var progressValue: Double = 0.0
     @Published var statusMessage: String = "İndirmeye hazır"
-    @Published var currentSpeed: String = ""
-    @Published var currentEta: String = ""
 
     private var process: Process?
-    private var tempUrlsFile: URL?
+    private var tempQueueFile: URL?
 
     init() {
         let defaultDesktop = (FileManager.default.homeDirectoryForCurrentUser.path as NSString).appendingPathComponent("Desktop/ALPTUĞ İÇERİK")
         if FileManager.default.fileExists(atPath: defaultDesktop) {
-            destPath = defaultDesktop
+            defaultDestPath = defaultDesktop
         } else {
-            destPath = (FileManager.default.homeDirectoryForCurrentUser.path as NSString).appendingPathComponent("Downloads")
+            defaultDestPath = (FileManager.default.homeDirectoryForCurrentUser.path as NSString).appendingPathComponent("Downloads")
         }
     }
 
-    var validUrlCount: Int {
-        urlText.components(separatedBy: .newlines)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty && !$0.hasPrefix("#") }
-            .count
-    }
-
-    func browseFolder() {
+    func browseDefaultFolder() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.canCreateDirectories = true
         panel.allowsMultipleSelection = false
-        panel.prompt = "Seç"
-        panel.directoryURL = URL(fileURLWithPath: destPath)
+        panel.prompt = "Varsayılan Yap"
+        panel.directoryURL = URL(fileURLWithPath: defaultDestPath)
 
         if panel.runModal() == .OK, let url = panel.url {
-            destPath = url.path
+            defaultDestPath = url.path
         }
     }
 
-    func openFolder() {
-        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: destPath)
+    func browseItemFolder(id: UUID) {
+        guard !isDownloading else { return }
+        guard let idx = queue.firstIndex(where: { $0.id == id }) else { return }
+
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Bu Video İçin Seç"
+        panel.directoryURL = URL(fileURLWithPath: queue[idx].destPath)
+
+        if panel.runModal() == .OK, let url = panel.url {
+            queue[idx].destPath = url.path
+        }
     }
 
-    func clearInput() {
+    func addUrlsFromInput() {
+        addUrls(inputUrl)
+        inputUrl = ""
+    }
+
+    func pasteFromClipboard() {
+        if let clip = NSPasteboard.general.string(forType: .string) {
+            addUrls(clip)
+        }
+    }
+
+    func addUrls(_ raw: String) {
         guard !isDownloading else { return }
-        urlText = ""
+        let lines = raw.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && !$0.hasPrefix("#") }
+
+        for u in lines {
+            // Avoid adding identical pending URLs
+            if !queue.contains(where: { $0.url == u }) {
+                queue.append(DownloadItem(url: u, destPath: defaultDestPath))
+            }
+        }
+        if !queue.isEmpty {
+            statusMessage = "\(queue.count) video indirilmeye hazır"
+        }
+    }
+
+    func removeItem(id: UUID) {
+        guard !isDownloading else { return }
+        queue.removeAll(where: { $0.id == id })
+        if queue.isEmpty {
+            statusMessage = "İndirmeye hazır"
+            progressValue = 0.0
+        } else {
+            statusMessage = "\(queue.count) video kuyrukta"
+        }
+    }
+
+    func clearQueue() {
+        guard !isDownloading else { return }
+        queue.removeAll()
         progressValue = 0.0
         statusMessage = "İndirmeye hazır"
+    }
+
+    func openFolder() {
+        let path = queue.first?.destPath ?? defaultDestPath
+        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: path)
     }
 
     func toggleDownload() {
@@ -111,12 +174,8 @@ class DownloaderModel: ObservableObject {
     }
 
     func startDownload() {
-        let urls = urlText.components(separatedBy: .newlines)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty && !$0.hasPrefix("#") }
-
-        guard !urls.isEmpty else {
-            statusMessage = "Lütfen en az bir video bağlantısı girin"
+        guard !queue.isEmpty else {
+            statusMessage = "Lütfen önce en az bir video bağlantısı ekleyin"
             return
         }
 
@@ -124,13 +183,24 @@ class DownloaderModel: ObservableObject {
         progressValue = 0.0
         statusMessage = "İndirme başlatılıyor..."
 
-        let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("filmdown_urls_\(UUID().uuidString).txt")
-        self.tempUrlsFile = tempFile
-        let fileContent = urls.joined(separator: "\n")
+        for i in 0..<queue.count {
+            queue[i].statusText = "Bekliyor"
+            queue[i].percent = 0.0
+            queue[i].isDownloading = false
+            queue[i].isDone = false
+            queue[i].isError = false
+        }
+
+        // Save queue as JSON file
+        let queuePayload = queue.map { ["url": $0.url, "dest": $0.destPath] }
+        let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("filmdown_queue_\(UUID().uuidString).json")
+        self.tempQueueFile = tempFile
+
         do {
-            try fileContent.write(to: tempFile, atomically: true, encoding: .utf8)
+            let data = try JSONSerialization.data(withJSONObject: queuePayload, options: .prettyPrinted)
+            try data.write(to: tempFile)
         } catch {
-            statusMessage = "Geçici dosya oluşturulamadı: \(error.localizedDescription)"
+            statusMessage = "Kuyruk dosyası oluşturulamadı: \(error.localizedDescription)"
             isDownloading = false
             return
         }
@@ -144,9 +214,9 @@ class DownloaderModel: ObservableObject {
             return
         }
 
-        var args = [eng, "--urls-file", tempFile.path, "--dest", destPath]
+        var args = [eng, "--queue-file", tempFile.path, "--dest", defaultDestPath]
         if separateFolders { args.append("--separate-folders") }
-        if preventCollision { args.append("--prevent-collision") }
+        // prevent_collision is permanently active in engine
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: py)
@@ -187,7 +257,7 @@ class DownloaderModel: ObservableObject {
                 self?.isDownloading = false
                 self?.process = nil
                 pipe.fileHandleForReading.readabilityHandler = nil
-                if let tmp = self?.tempUrlsFile {
+                if let tmp = self?.tempQueueFile {
                     try? FileManager.default.removeItem(at: tmp)
                 }
             }
@@ -222,6 +292,14 @@ class DownloaderModel: ObservableObject {
             case "item_start":
                 let idx = json["index"] as? Int ?? 1
                 let total = json["total"] as? Int ?? 1
+                let itemIdx = idx - 1
+                if itemIdx >= 0 && itemIdx < self.queue.count {
+                    for i in 0..<self.queue.count {
+                        if i < itemIdx { self.queue[i].isDownloading = false }
+                    }
+                    self.queue[itemIdx].isDownloading = true
+                    self.queue[itemIdx].statusText = "İndiriliyor..."
+                }
                 self.statusMessage = "Video \(idx) / \(total) indiriliyor..."
             case "item_progress":
                 let idx = json["index"] as? Int ?? 1
@@ -229,6 +307,14 @@ class DownloaderModel: ObservableObject {
                 let percent = json["percent"] as? Double ?? 0.0
                 let speed = json["speed"] as? String ?? ""
                 let eta = json["eta"] as? String ?? ""
+
+                let itemIdx = idx - 1
+                if itemIdx >= 0 && itemIdx < self.queue.count {
+                    self.queue[itemIdx].percent = percent
+                    var sub = "%\(String(format: "%.1f", percent))"
+                    if !speed.isEmpty { sub += " • \(speed)" }
+                    self.queue[itemIdx].statusText = sub
+                }
 
                 let itemFraction = (Double(idx - 1) + (percent / 100.0)) / Double(total)
                 self.progressValue = min(max(itemFraction, 0.0), 1.0)
@@ -241,17 +327,34 @@ class DownloaderModel: ObservableObject {
                 let idx = json["index"] as? Int ?? 1
                 let total = json["total"] as? Int ?? 1
                 let msg = json["message"] as? String ?? "İşleniyor..."
+                let itemIdx = idx - 1
+                if itemIdx >= 0 && itemIdx < self.queue.count {
+                    self.queue[itemIdx].statusText = msg
+                }
                 self.statusMessage = "Video \(idx) / \(total) — \(msg)"
             case "item_complete":
                 let idx = json["index"] as? Int ?? 1
                 let total = json["total"] as? Int ?? 1
                 let title = json["title"] as? String ?? "Video"
+                let itemIdx = idx - 1
+                if itemIdx >= 0 && itemIdx < self.queue.count {
+                    self.queue[itemIdx].isDownloading = false
+                    self.queue[itemIdx].isDone = true
+                    self.queue[itemIdx].percent = 100.0
+                    self.queue[itemIdx].statusText = "Tamamlandı"
+                }
                 self.progressValue = Double(idx) / Double(total)
                 self.statusMessage = "Video \(idx) / \(total) tamamlandı: \(title)"
             case "item_error":
                 let idx = json["index"] as? Int ?? 1
                 let total = json["total"] as? Int ?? 1
                 let err = json["error"] as? String ?? "Hata"
+                let itemIdx = idx - 1
+                if itemIdx >= 0 && itemIdx < self.queue.count {
+                    self.queue[itemIdx].isDownloading = false
+                    self.queue[itemIdx].isError = true
+                    self.queue[itemIdx].statusText = "Hata"
+                }
                 self.statusMessage = "Video \(idx) / \(total) indirilemedi: \(err)"
             case "all_done":
                 let total = json["total"] as? Int ?? 0
@@ -308,10 +411,10 @@ struct LiquidGlassCard<Content: View>: View {
     }
     var body: some View {
         content
-            .padding(14)
+            .padding(12)
             .background(
                 RoundedRectangle(cornerRadius: 12)
-                    .fill(Color.black.opacity(0.28))
+                    .fill(Color.black.opacity(0.30))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 12)
@@ -328,7 +431,7 @@ struct FilmDownMainView: View {
             VisualEffectBackground()
             WindowConfigurator()
 
-            VStack(spacing: 16) {
+            VStack(spacing: 12) {
                 // Header Bar
                 HStack(alignment: .center) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -340,8 +443,8 @@ struct FilmDownMainView: View {
                             .foregroundColor(Color.white.opacity(0.55))
                     }
                     Spacer()
-                    if model.validUrlCount > 0 {
-                        Text("\(model.validUrlCount) Bağlantı")
+                    if !model.queue.isEmpty {
+                        Text("\(model.queue.count) Video")
                             .font(.system(size: 11, weight: .medium, design: .monospaced))
                             .foregroundColor(Color.cyan)
                             .padding(.horizontal, 10)
@@ -353,108 +456,213 @@ struct FilmDownMainView: View {
                             )
                     }
                 }
-                .padding(.top, 8)
+                .padding(.top, 4)
 
-                // URL Input Card
+                // Default Destination Card
                 LiquidGlassCard {
                     VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text("BAĞLANTI LİSTESİ")
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundColor(Color.white.opacity(0.5))
-                            Spacer()
-                            Text("Her satıra bir adres")
-                                .font(.system(size: 10, weight: .regular))
-                                .foregroundColor(Color.white.opacity(0.35))
-                        }
-
-                        ZStack(alignment: .topLeading) {
-                            if model.urlText.isEmpty {
-                                Text("Video veya akış bağlantılarını buraya yapıştırın...\nhttps://...\nhttps://...")
-                                    .font(.system(size: 12, weight: .regular, design: .monospaced))
-                                    .foregroundColor(Color.white.opacity(0.25))
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 10)
-                                    .allowsHitTesting(false)
-                            }
-                            TextEditor(text: $model.urlText)
-                                .font(.system(size: 12, weight: .regular, design: .monospaced))
-                                .foregroundColor(.white)
-                                .scrollContentBackground(.hidden)
-                                .background(Color.black.opacity(0.25))
-                                .cornerRadius(8)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .stroke(Color.white.opacity(0.08), lineWidth: 1)
-                                )
-                                .frame(height: 110)
-                        }
-                    }
-                }
-
-                // Options & Destination Card
-                LiquidGlassCard {
-                    VStack(alignment: .leading, spacing: 12) {
-                        // Destination Path
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("HEDEF KLASÖR")
+                        HStack(spacing: 8) {
+                            Text("VARSAYILAN HEDEF:")
                                 .font(.system(size: 10, weight: .semibold))
                                 .foregroundColor(Color.white.opacity(0.5))
 
-                            HStack(spacing: 8) {
-                                Text(model.destPath)
-                                    .font(.system(size: 11, weight: .regular))
-                                    .foregroundColor(Color.white.opacity(0.85))
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
+                            Text(model.defaultDestPath)
+                                .font(.system(size: 11, weight: .regular))
+                                .foregroundColor(Color.white.opacity(0.85))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+
+                            Button(action: { model.browseDefaultFolder() }) {
+                                Text("Gözat...")
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundColor(.white)
                                     .padding(.horizontal, 10)
-                                    .padding(.vertical, 6)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .background(Color.black.opacity(0.3))
+                                    .padding(.vertical, 4)
+                                    .background(Color.white.opacity(0.1))
                                     .cornerRadius(6)
                                     .overlay(
                                         RoundedRectangle(cornerRadius: 6)
-                                            .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                                            .stroke(Color.white.opacity(0.2), lineWidth: 1)
                                     )
-
-                                Button(action: { model.browseFolder() }) {
-                                    Text("Gözat...")
-                                        .font(.system(size: 11, weight: .medium))
-                                        .foregroundColor(.white)
-                                        .padding(.horizontal, 12)
-                                        .padding(.vertical, 6)
-                                        .background(Color.white.opacity(0.1))
-                                        .cornerRadius(6)
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: 6)
-                                                .stroke(Color.white.opacity(0.2), lineWidth: 1)
-                                        )
-                                }
-                                .buttonStyle(PlainButtonStyle())
                             }
+                            .buttonStyle(PlainButtonStyle())
                         }
 
                         Divider()
                             .background(Color.white.opacity(0.1))
 
-                        // Toggles
-                        HStack(spacing: 24) {
-                            Toggle("Her video için ayrı klasör", isOn: $model.separateFolders)
+                        HStack {
+                            Toggle("Her video için ayrı alt klasör oluştur", isOn: $model.separateFolders)
                                 .toggleStyle(SwitchToggleStyle(tint: Color.cyan))
                                 .font(.system(size: 11, weight: .medium))
                                 .foregroundColor(.white)
-
-                            Toggle("Çakışma koruması (Üzerine yazma)", isOn: $model.preventCollision)
-                                .toggleStyle(SwitchToggleStyle(tint: Color.cyan))
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundColor(.white)
+                            Spacer()
+                            Text("Çakışma koruması devrede")
+                                .font(.system(size: 10, weight: .regular))
+                                .foregroundColor(Color.white.opacity(0.4))
                         }
                     }
                 }
 
-                // Progress Card (Loading Bar)
+                // Add URL Input Bar
+                HStack(spacing: 8) {
+                    TextField("Video veya akış bağlantısını girin...", text: $model.inputUrl, onCommit: {
+                        model.addUrlsFromInput()
+                    })
+                    .textFieldStyle(PlainTextFieldStyle())
+                    .font(.system(size: 12, weight: .regular, design: .monospaced))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(Color.black.opacity(0.35))
+                    .cornerRadius(8)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                    )
+                    .disabled(model.isDownloading)
+
+                    Button(action: { model.addUrlsFromInput() }) {
+                        Text("Ekle")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 7)
+                            .background(Color.white.opacity(0.12))
+                            .cornerRadius(8)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(Color.white.opacity(0.2), lineWidth: 1)
+                            )
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    .disabled(model.isDownloading || model.inputUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                    Button(action: { model.pasteFromClipboard() }) {
+                        Text("Panodan Ekle")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(Color.cyan)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 7)
+                            .background(Color.cyan.opacity(0.12))
+                            .cornerRadius(8)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(Color.cyan.opacity(0.3), lineWidth: 1)
+                            )
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    .disabled(model.isDownloading)
+                }
+
+                // Queue List Card
                 LiquidGlassCard {
                     VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("İNDİRME LİSTESİ")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundColor(Color.white.opacity(0.5))
+                            Spacer()
+                            Text("Her video için ayrı hedef klasör seçebilirsiniz")
+                                .font(.system(size: 10, weight: .regular))
+                                .foregroundColor(Color.white.opacity(0.35))
+                        }
+
+                        if model.queue.isEmpty {
+                            VStack(spacing: 6) {
+                                Spacer()
+                                Text("Kuyrukta video bulunmuyor.")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundColor(Color.white.opacity(0.45))
+                                Text("Yukarıdaki kutudan bağlantı ekleyebilir veya 'Panodan Ekle'yi kullanabilirsiniz.")
+                                    .font(.system(size: 10, weight: .regular))
+                                    .foregroundColor(Color.white.opacity(0.3))
+                                Spacer()
+                            }
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 185)
+                        } else {
+                            ScrollView(.vertical, showsIndicators: true) {
+                                LazyVStack(spacing: 8) {
+                                    ForEach(Array(model.queue.enumerated()), id: \.element.id) { index, item in
+                                        HStack(alignment: .center, spacing: 8) {
+                                            Text("\(index + 1).")
+                                                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                                .foregroundColor(item.isDownloading ? Color.cyan : Color.white.opacity(0.5))
+                                                .frame(width: 22, alignment: .trailing)
+
+                                            VStack(alignment: .leading, spacing: 3) {
+                                                Text(item.url)
+                                                    .font(.system(size: 11, weight: .regular, design: .monospaced))
+                                                    .foregroundColor(.white)
+                                                    .lineLimit(1)
+                                                    .truncationMode(.middle)
+
+                                                HStack(spacing: 6) {
+                                                    Text("Hedef: \(item.destPath)")
+                                                        .font(.system(size: 10, weight: .regular))
+                                                        .foregroundColor(Color.white.opacity(0.55))
+                                                        .lineLimit(1)
+                                                        .truncationMode(.middle)
+
+                                                    if item.isDownloading || item.isDone || item.isError {
+                                                        Text("• \(item.statusText)")
+                                                            .font(.system(size: 10, weight: .medium))
+                                                            .foregroundColor(item.isDone ? Color.green : (item.isError ? Color.red : Color.cyan))
+                                                    }
+                                                }
+                                            }
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+
+                                            Button(action: { model.browseItemFolder(id: item.id) }) {
+                                                Text("Klasör Seç")
+                                                    .font(.system(size: 10, weight: .medium))
+                                                    .foregroundColor(Color.cyan)
+                                                    .padding(.horizontal, 8)
+                                                    .padding(.vertical, 4)
+                                                    .background(Color.cyan.opacity(0.12))
+                                                    .cornerRadius(6)
+                                                    .overlay(
+                                                        RoundedRectangle(cornerRadius: 6)
+                                                            .stroke(Color.cyan.opacity(0.25), lineWidth: 1)
+                                                    )
+                                            }
+                                            .buttonStyle(PlainButtonStyle())
+                                            .disabled(model.isDownloading)
+
+                                            Button(action: { model.removeItem(id: item.id) }) {
+                                                Text("Sil")
+                                                    .font(.system(size: 10, weight: .medium))
+                                                    .foregroundColor(Color.white.opacity(0.45))
+                                                    .padding(.horizontal, 6)
+                                                    .padding(.vertical, 4)
+                                            }
+                                            .buttonStyle(PlainButtonStyle())
+                                            .disabled(model.isDownloading)
+                                        }
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 6)
+                                        .background(
+                                            RoundedRectangle(cornerRadius: 8)
+                                                .fill(item.isDownloading ? Color.cyan.opacity(0.1) : Color.black.opacity(0.2))
+                                        )
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 8)
+                                                .stroke(item.isDownloading ? Color.cyan.opacity(0.3) : Color.white.opacity(0.06), lineWidth: 1)
+                                        )
+                                    }
+                                }
+                                .padding(.vertical, 2)
+                            }
+                            .frame(height: 185)
+                        }
+                    }
+                }
+
+                // Progress Loading Bar Card
+                LiquidGlassCard {
+                    VStack(alignment: .leading, spacing: 6) {
                         HStack {
                             Text("DURUM")
                                 .font(.system(size: 10, weight: .semibold))
@@ -472,7 +680,7 @@ struct FilmDownMainView: View {
                             ZStack(alignment: .leading) {
                                 RoundedRectangle(cornerRadius: 4)
                                     .fill(Color.black.opacity(0.4))
-                                    .frame(height: 8)
+                                    .frame(height: 7)
                                     .overlay(
                                         RoundedRectangle(cornerRadius: 4)
                                             .stroke(Color.white.opacity(0.08), lineWidth: 1)
@@ -486,11 +694,11 @@ struct FilmDownMainView: View {
                                             endPoint: .trailing
                                         )
                                     )
-                                    .frame(width: max(geo.size.width * CGFloat(model.progressValue), model.isDownloading ? 12 : 0), height: 8)
+                                    .frame(width: max(geo.size.width * CGFloat(model.progressValue), model.isDownloading ? 12 : 0), height: 7)
                                     .animation(.linear(duration: 0.2), value: model.progressValue)
                             }
                         }
-                        .frame(height: 8)
+                        .frame(height: 7)
 
                         Text(model.statusMessage)
                             .font(.system(size: 11, weight: .regular))
@@ -509,7 +717,7 @@ struct FilmDownMainView: View {
                             .font(.system(size: 12, weight: .medium))
                             .foregroundColor(.white)
                             .padding(.horizontal, 14)
-                            .padding(.vertical, 8)
+                            .padding(.vertical, 7)
                             .background(Color.white.opacity(0.08))
                             .cornerRadius(8)
                             .overlay(
@@ -521,17 +729,17 @@ struct FilmDownMainView: View {
 
                     Spacer()
 
-                    Button(action: { model.clearInput() }) {
-                        Text("Temizle")
+                    Button(action: { model.clearQueue() }) {
+                        Text("Tümünü Temizle")
                             .font(.system(size: 12, weight: .medium))
                             .foregroundColor(Color.white.opacity(0.6))
                             .padding(.horizontal, 14)
-                            .padding(.vertical, 8)
+                            .padding(.vertical, 7)
                             .background(Color.white.opacity(0.05))
                             .cornerRadius(8)
                     }
                     .buttonStyle(PlainButtonStyle())
-                    .disabled(model.isDownloading)
+                    .disabled(model.isDownloading || model.queue.isEmpty)
 
                     Button(action: { model.toggleDownload() }) {
                         HStack(spacing: 6) {
@@ -539,13 +747,13 @@ struct FilmDownMainView: View {
                                 .font(.system(size: 12, weight: .semibold))
                                 .foregroundColor(.white)
                         }
-                        .padding(.horizontal, 20)
-                        .padding(.vertical, 8)
+                        .padding(.horizontal, 22)
+                        .padding(.vertical, 7)
                         .background(
                             Group {
                                 if model.isDownloading {
                                     LinearGradient(
-                                        gradient: Gradient(colors: [Color.red.opacity(0.8), Color.pink.opacity(0.8)]),
+                                        gradient: Gradient(colors: [Color.red.opacity(0.85), Color.pink.opacity(0.85)]),
                                         startPoint: .leading,
                                         endPoint: .trailing
                                     )
@@ -562,12 +770,13 @@ struct FilmDownMainView: View {
                         .shadow(color: model.isDownloading ? Color.red.opacity(0.3) : Color.cyan.opacity(0.3), radius: 6, y: 2)
                     }
                     .buttonStyle(PlainButtonStyle())
+                    .disabled(model.queue.isEmpty && !model.isDownloading)
                 }
-                .padding(.bottom, 6)
+                .padding(.bottom, 4)
             }
-            .padding(18)
+            .padding(16)
         }
-        .frame(minWidth: 580, idealWidth: 620, maxWidth: 700, minHeight: 520, idealHeight: 540, maxHeight: 600)
+        .frame(width: 660, height: 610)
     }
 }
 

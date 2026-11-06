@@ -121,19 +121,34 @@ class NonCollidingYDL(yt_dlp.YoutubeDL):
 
 def main():
     parser = argparse.ArgumentParser(description="FilmDown Engine")
-    parser.add_argument("--urls-file", required=True, help="File containing URLs to download")
-    parser.add_argument("--dest", default=os.path.expanduser("~/Desktop/ALPTUĞ İÇERİK"), help="Destination directory")
+    parser.add_argument("--queue-file", help="JSON file containing list of {url, dest} objects")
+    parser.add_argument("--urls-file", help="Text file containing URLs (legacy)")
+    parser.add_argument("--dest", default=os.path.expanduser("~/Desktop/ALPTUĞ İÇERİK"), help="Default destination directory")
     parser.add_argument("--separate-folders", action="store_true", default=False, help="Create separate folder per video")
-    parser.add_argument("--prevent-collision", action="store_true", default=False, help="Auto-increment duplicate names")
+    parser.add_argument("--prevent-collision", action="store_true", default=True, help="Auto-increment duplicate names (always enabled)")
     args = parser.parse_args()
 
-    dest_dir = os.path.expanduser(args.dest)
-    os.makedirs(dest_dir, exist_ok=True)
+    default_dest = os.path.expanduser(args.dest)
+    os.makedirs(default_dest, exist_ok=True)
 
-    with open(args.urls_file, "r", encoding="utf-8") as f:
-        urls = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
+    items = []
+    if args.queue_file and os.path.exists(args.queue_file):
+        with open(args.queue_file, "r", encoding="utf-8") as f:
+            raw_items = json.load(f)
+            for it in raw_items:
+                url = it.get("url", "").strip()
+                if not url or url.startswith("#"):
+                    continue
+                dest = it.get("dest", "").strip() or default_dest
+                items.append({"url": url, "dest": os.path.expanduser(dest)})
+    elif args.urls_file and os.path.exists(args.urls_file):
+        with open(args.urls_file, "r", encoding="utf-8") as f:
+            for line in f:
+                url = line.strip()
+                if url and not url.startswith("#"):
+                    items.append({"url": url, "dest": default_dest})
 
-    total_count = len(urls)
+    total_count = len(items)
     if total_count == 0:
         print(json.dumps({"type": "all_done", "total": 0, "success_count": 0, "failed_count": 0}), flush=True)
         return
@@ -143,13 +158,16 @@ def main():
 
     print(json.dumps({"type": "batch_start", "total": total_count}), flush=True)
 
-    # Check for ffmpeg
     ffmpeg_bin = shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg"
     if not os.path.exists(ffmpeg_bin) and os.path.exists("/usr/local/bin/ffmpeg"):
         ffmpeg_bin = "/usr/local/bin/ffmpeg"
 
-    for idx, url in enumerate(urls, 1):
-        print(json.dumps({"type": "item_start", "index": idx, "total": total_count, "url": url}), flush=True)
+    for idx, item in enumerate(items, 1):
+        url = item["url"]
+        item_dest = item["dest"]
+        os.makedirs(item_dest, exist_ok=True)
+
+        print(json.dumps({"type": "item_start", "index": idx, "total": total_count, "url": url, "dest": item_dest}), flush=True)
 
         current_percent = 0.0
 
@@ -184,7 +202,7 @@ def main():
         ydl_opts = {
             'format': 'bestvideo+bestaudio/best',
             'merge_output_format': 'mp4',
-            'paths': {'home': dest_dir, 'temp': dest_dir},
+            'paths': {'home': item_dest, 'temp': item_dest},
             'quiet': True,
             'no_warnings': True,
             'noprogress': True,
@@ -199,8 +217,8 @@ def main():
             ydl = NonCollidingYDL(
                 params=ydl_opts,
                 separate_folders=args.separate_folders,
-                base_dir=dest_dir,
-                prevent_collision=args.prevent_collision
+                base_dir=item_dest,
+                prevent_collision=True
             )
             ydl.download([url])
             success_count += 1
